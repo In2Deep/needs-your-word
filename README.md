@@ -2,19 +2,7 @@
 
 A Claude Code mod that lists the questions Claude is waiting on you for in a sidebar. You answer each one with Yes, No, or a typed reply. Every session keeps its own list.
 
-```
-Needs your word
-
-1. Drop Node 18 support?
-CI spends 4 minutes a run on it.
-Recommended: yes
-[ Yes ]  [ No ]
-Other: neither? type your answer, Enter drafts it
-
-2. Rename the config file?
-[ Yes ]  [ No ]
-Other: neither? type your answer, Enter drafts it
-```
+<img src="assets/screenshot.png" width="760" alt="The needs-your-word pane with four open questions. Each has the question, the reason, a recommendation, Yes and No buttons, and an Other box for a typed answer.">
 
 ## What it does
 
@@ -98,7 +86,7 @@ Questions in this file show in every session in that repo. A session in `~/code/
 
 ## Surfaces
 
-The tests draw the pane for the terminal, desktop and mobile surfaces. When the desktop app shows the pane in its small minimized form, the pane shows only how many questions are waiting. So far the mod has been used in the terminal; on desktop and mobile it is covered by the tests only.
+The tests draw the pane for the terminal, desktop and mobile surfaces. When the desktop app shows the pane in its small minimized form, the pane shows only how many questions are waiting. The mod has been used in the terminal and the desktop app, where the screenshot above was taken; on mobile it is covered by the tests only.
 
 ## Develop
 
