@@ -16,10 +16,14 @@ const QUESTIONS = JSON.stringify({
 
 // The engine beneath the mod: files in memory, and every draft put in the
 // prompt box kept in `filled`. Nothing here can send a prompt.
+const TOOL = 'mcp__needs-your-word__question'
+const LIST = (session: string) => `/Users/owner/.claude/needs-your-word/${session}.json`
+
 const engine = (
   on: On,
   files: Record<string, string>,
   root = '/Users/owner/my-app',
+  session = 'session-a',
 ) => {
   const world = {
     files: { ...files },
@@ -30,6 +34,14 @@ const engine = (
 
   mock.env(on, { HOME: '/Users/owner' })
   on('session.root', () => ({ value: root }))
+  on('session.id', () => ({ value: session }))
+  on('tool.register', () => ({ value: { tool: TOOL } }))
+  on('tool.call', () => ({ deny: 'no hook answered' }))
+  on('fs.write', (_, e) => {
+    world.files[e.path] = e.text
+
+    return { value: undefined }
+  })
   mock.clock(on)
   on('command.register', () => ({ value: { command: 'word' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -118,7 +130,7 @@ test('no file: nothing is waiting; a broken file says so', async ($, on) => {
   await $.session.start(START)
   const empty = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await empty.find({ type: 'Text' }))?.text).toBe(
-    'Nothing is waiting on you in my-app.',
+    'Nothing is waiting on you in this session (my-app).',
   )
   await empty.unmount()
 
@@ -189,7 +201,7 @@ test('another repo never shows my-app questions', async ($, on) => {
 
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await pane.find({ type: 'Text' }))?.text).toBe(
-    'Nothing is waiting on you in claude-mods.',
+    'Nothing is waiting on you in this session (claude-mods).',
   )
   expect(await pane.find({ type: 'Text', text: /Node 18/ })).toBeUndefined()
   await pane.unmount()
@@ -219,4 +231,99 @@ test("a worktree reads its repo's questions", async ($, on) => {
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: /Drop Node 18 support\?/ })).toBeDefined()
   await pane.unmount()
+})
+
+const ASK = {
+  tool: TOOL,
+  action: 'ask',
+  id: 'deploy',
+  ask: 'Deploy on Friday?',
+  why: 'The fix is ready; the next window is Monday.',
+  recommend: 'no',
+} as const
+
+test('the tool adds a question to this session, and resolve takes it off', async ($, on) => {
+  const world = engine(on, {})
+
+  await $.session.start(START)
+  const added = await $.tool.call(ASK)
+  expect(String(added.result)).toStartWith('Added "deploy". 1 open in this session.')
+  expect(world.toasts.at(-1)).toBe('A question needs your word: Deploy on Friday?')
+  expect(JSON.parse(world.files[LIST('session-a')] ?? '{}')).toEqual({
+    questions: [
+      {
+        id: 'deploy',
+        ask: 'Deploy on Friday?',
+        why: 'The fix is ready; the next window is Monday.',
+        recommend: 'no',
+      },
+    ],
+  })
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /Deploy on Friday\?/ })).toBeDefined()
+  await pane.press({ key: 'no-deploy' })
+  expect(world.filled).toEqual(['Answer to "Deploy on Friday?": no. '])
+  await pane.unmount()
+
+  // Asking again with the same id replaces the question.
+  await $.tool.call({ ...ASK, ask: 'Deploy on Monday?' })
+  const listed = await $.tool.call({ tool: TOOL, action: 'list' })
+  expect(JSON.parse(String(listed.result)).questions.map((q: { ask: string }) => q.ask)).toEqual([
+    'Deploy on Monday?',
+  ])
+
+  const resolved = await $.tool.call({ tool: TOOL, action: 'resolve', id: 'deploy' })
+  expect(String(resolved.result)).toBe('Resolved "deploy". 0 open in this session.')
+  const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await after.find({ type: 'Text' }))?.text).toBe(
+    'Nothing is waiting on you in this session (my-app).',
+  )
+  await after.unmount()
+})
+
+test("another session in the same repo never shows this session's questions", async ($, on) => {
+  const own = JSON.stringify({
+    questions: [{ id: 'deploy', ask: 'Deploy on Friday?', why: '', recommend: '' }],
+  })
+  engine(on, { [LIST('session-a')]: own }, '/Users/owner/my-app', 'session-b')
+
+  await $.session.start(START)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: /your word/ })).toBeUndefined()
+  await band.unmount()
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await pane.find({ type: 'Text', text: /Deploy/ })).toBeUndefined()
+  await pane.unmount()
+
+  const gone = await $.tool.call({ tool: TOOL, action: 'resolve', id: 'deploy' })
+  expect(String(gone.result)).toBe('No open question has the id "deploy". 0 open in this session.')
+})
+
+test('the tool refuses a question with no id, and points at a hand-written one', async ($, on) => {
+  const world = engine(on, { [FILE]: QUESTIONS })
+
+  await $.session.start(START)
+  const bad = await $.tool.call({ tool: TOOL, action: 'ask', ask: 'Ship it?' })
+  expect(String(bad.result)).toStartWith('Not added')
+  expect(world.files[LIST('session-a')]).toBeUndefined()
+
+  const shared = await $.tool.call({ tool: TOOL, action: 'resolve', id: 'node18' })
+  expect(String(shared.result)).toContain(`It is in the hand-written file ${FILE}`)
+  expect(world.files[FILE]).toBe(QUESTIONS)
+})
+
+test('desktop widget: the minimized pane says how many are waiting', async ($, on) => {
+  engine(on, { [FILE]: QUESTIONS })
+
+  await $.session.start({ ...START, surface: 'desktop' })
+  const widget = await $.ui.mount({
+    ...PANE,
+    props: { ...PANE.props, placement: 'widget' },
+    surface: 'desktop',
+  })
+  expect((await widget.find({ type: 'Text' }))?.text).toBe('2 questions need your word')
+  expect(await widget.find({ type: 'Button' })).toBeUndefined()
+  await widget.unmount()
 })

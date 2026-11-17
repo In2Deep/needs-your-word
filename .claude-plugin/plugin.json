@@ -1,7 +1,7 @@
 {
   "name": "needs-your-word",
-  "version": "0.3.0",
-  "description": "A sidebar of the questions Claude is waiting on you for. Answer each with Yes, No, or a typed reply; the answer goes into your prompt box and you send it. Each repo keeps its own list in ~/.claude/<repo>_questions.json. /word opens it.",
+  "version": "0.4.0",
+  "description": "A sidebar of the questions Claude is waiting on you for, one list per session. Claude adds them with the mod's tool; you answer each with Yes, No, or a typed reply, which goes into your prompt box for you to send. /word opens it. Terminal and desktop app.",
   "types": "./types/index.d.ts",
   "license": "MIT-0",
   "author": {

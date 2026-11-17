@@ -1,16 +1,24 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Board, Question } from '../types'
+import type { Board, Question, QuestionCall } from '../types'
 
-// The open questions for the owner, kept by the assistant in one JSON file per
-// repo, named after the folder the session runs in:
-//   ~/.claude/<repo>_questions.json   (my-app -> my-app_questions.json)
+// The questions the assistant is waiting on the person for.
+//
+// Each session has its own list. The assistant adds to it and clears it with
+// the tool this mod registers (mcp__needs-your-word__question); the mod keeps
+// the list in a file named after the session:
+//   ~/.claude/needs-your-word/<session id>.json
 //   { "questions": [ { "id", "ask", "why", "recommend" } ] }
-// A session in a worktree (<repo>/.claude/worktrees/<name>) reads its repo's
-// file. A repo without a file shows nothing: no other repo's questions.
+// A question shows only in the session that asked it, however many sessions
+// are open in the same repo.
+//
+// A file written by hand is still read, and shows in every session in its
+// repo (a session in <repo>/.claude/worktrees/<name> counts as <repo>):
+//   ~/.claude/<repo>_questions.json   (my-app -> my-app_questions.json)
+//
 // A press never sends anything: it drafts the answer in the prompt box, and the
-// owner's own Enter sends it. Under Yes and No each question has an "Other"
+// person's own Enter sends it. Under Yes and No each question has an "Other"
 // box for an answer that is neither; its Enter drafts that text the same way.
 // No dim text anywhere in the pane: light grey on the pane's darker grey is
 // hard to read. The question is bold in the theme's warning color, the reason
@@ -19,6 +27,24 @@ import type { Board, Question } from '../types'
 const PANE = 'needs-your-word'
 const TITLE = 'Needs your word'
 const REFRESH_MS = 10000
+const TOOL = 'mcp__needs-your-word__question'
+const TOOL_DESCRIPTION = [
+  'Keeps the list of decisions you are waiting on the person for. The list belongs to this session, and the person sees it in a sidebar with Yes and No buttons and a box for a typed answer.',
+  'action "ask" adds a question, or replaces the one with the same id. Give a short id, the question in `ask` (phrase it so yes or no answers it when you can), the reason or the numbers behind it in `why`, and your recommendation in `recommend` (leave it out when you have none). Use it for a decision that is the person\'s to make, when there is other work you can carry on with meanwhile.',
+  'The answer arrives as a message from the person that starts with `Answer to "<ask>":`. Act on it, then call action "resolve" with the id to take the question off the list.',
+  'action "list" returns the open questions.',
+].join('\n')
+const TOOL_INPUT = {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['ask', 'resolve', 'list'] },
+    id: { type: 'string', description: 'A short name for the question, unique in the list.' },
+    ask: { type: 'string', description: 'The question.' },
+    why: { type: 'string', description: 'The reason or the numbers behind it.' },
+    recommend: { type: 'string', description: 'Your recommendation, when you have one.' },
+  },
+  required: ['action'],
+}
 const EMPTY: Board = { questions: [], drafted: {}, problem: null }
 
 const board = atom({ plugin: 'needs-your-word', key: 'board' } as const, EMPTY)
@@ -62,27 +88,56 @@ const repoOf = (root: string): string => {
 const repo = async ($: EngineInterface): Promise<string> =>
   repoOf(await $.session.root())
 
+type Paths = { session: string; shared: string | null }
+
+// Where this session's own list is kept, and the hand-written file of its
+// repo. Null when HOME is not set: there is then nowhere to keep a list.
+const paths = async ($: EngineInterface): Promise<Paths | null> => {
+  const home = await $.env.get('HOME')
+
+  if (home === undefined || home === '') {
+    return null
+  }
+
+  const id = (await $.session.id()).replace(/[^A-Za-z0-9_-]/g, '_')
+  const name = await repo($)
+
+  return {
+    session: `${home}/.claude/needs-your-word/${id}.json`,
+    shared: name === '' ? null : `${home}/.claude/${name}_questions.json`,
+  }
+}
+
+const load = async ($: EngineInterface, path: string): Promise<Question[]> =>
+  (await $.fs.exists(path)) ? parse(await $.fs.read(path)) : []
+
+// This session's questions first, then the repo's hand-written ones; a
+// hand-written question with an id the session already uses is left out.
+const merge = (own: Question[], shared: Question[]): Question[] => [
+  ...own,
+  ...shared.filter(item => !own.some(question => question.id === item.id)),
+]
+
 // Never rejects: a pass that fails (the session is closing, the mod is
 // reloading) is dropped, and the next one tries again.
 const refresh = async ($: EngineInterface): Promise<void> => {
   try {
-    const name = await repo($)
-    const home = await $.env.get('HOME')
+    const at = await paths($)
 
-    if (name === '' || home === undefined) {
+    if (at === null) {
       await update($, board, () => EMPTY)
 
       return
     }
 
-    const path = `${home}/.claude/${name}_questions.json`
     let questions: Question[] = []
     let problem: string | null = null
 
     try {
-      if (await $.fs.exists(path)) {
-        questions = parse(await $.fs.read(path))
-      }
+      questions = merge(
+        await load($, at.session),
+        at.shared === null ? [] : await load($, at.shared),
+      )
     } catch (error) {
       problem = `The questions file could not be read: ${error instanceof Error ? error.message : 'unknown error'}`
     }
@@ -100,6 +155,84 @@ const refresh = async ($: EngineInterface): Promise<void> => {
   } catch {
     // Dropped.
   }
+}
+
+const save = async (
+  $: EngineInterface,
+  path: string,
+  questions: Question[],
+): Promise<void> => {
+  await $.fs.write(path, `${JSON.stringify({ questions }, null, 2)}\n`)
+}
+
+const count = (questions: Question[]): string =>
+  `${questions.length} open in this session.`
+
+// The tool, as the assistant calls it: what it reads back is the answer.
+const serve = async (
+  $: EngineInterface,
+  input: QuestionCall,
+): Promise<string> => {
+  const at = await paths($)
+
+  if (at === null) {
+    return 'Not done: HOME is not set, so there is nowhere to keep the list.'
+  }
+
+  const action = text(input.action)
+  const id = text(input.id).trim()
+  const own = await load($, at.session)
+
+  if (action === 'list') {
+    const shared = at.shared === null ? [] : await load($, at.shared)
+
+    return JSON.stringify({ questions: merge(own, shared) }, null, 2)
+  }
+
+  if (action === 'ask') {
+    const ask = text(input.ask).trim()
+
+    if (id === '' || ask === '') {
+      return 'Not added: "ask" needs both an id and the question in `ask`.'
+    }
+
+    const question: Question = {
+      id,
+      ask,
+      why: text(input.why).trim(),
+      recommend: text(input.recommend).trim(),
+    }
+    const next = [...own.filter(item => item.id !== id), question]
+
+    await save($, at.session, next)
+    await refresh($)
+    $.ui.toast(`A question needs your word: ${short(ask)}`)
+
+    return `Added "${id}". ${count(next)} The person answers from the sidebar; the answer arrives as a message that starts with: Answer to "${ask}":`
+  }
+
+  if (action === 'resolve') {
+    if (id === '') {
+      return 'Not resolved: "resolve" needs the id of the question.'
+    }
+
+    if (!own.some(item => item.id === id)) {
+      const shared = at.shared === null ? [] : await load($, at.shared)
+
+      return at.shared !== null && shared.some(item => item.id === id)
+        ? `"${id}" is not in this session's list. It is in the hand-written file ${at.shared}; remove it there.`
+        : `No open question has the id "${id}". ${count(own)}`
+    }
+
+    const next = own.filter(item => item.id !== id)
+
+    await save($, at.session, next)
+    await refresh($)
+
+    return `Resolved "${id}". ${count(next)}`
+  }
+
+  return 'Unknown action. Use "ask", "resolve" or "list".'
 }
 
 // A press drafts the answer in the prompt box. Nothing is sent: the owner's
@@ -167,6 +300,12 @@ export const register: Register = on => {
       name: 'word',
       description: 'Open the list of questions that need your word',
     })
+    await $.tool.register({
+      name: 'question',
+      description: TOOL_DESCRIPTION,
+      inputSchema: TOOL_INPUT,
+      isDeferred: false,
+    })
     await refresh($)
     $.clock.every(REFRESH_MS, () => {
       void refresh($)
@@ -174,6 +313,14 @@ export const register: Register = on => {
 
     return next(e)
   })
+
+  // Answered here, ahead of the permission check: the tool changes nothing
+  // but this session's own list.
+  on('tool.call', { tool: TOOL }, async ($, e) => ({
+    result: await serve($, e),
+  })).catch(() => ({
+    deny: 'needs-your-word: the list could not be read or changed.',
+  }))
 
   on('command.run', { command: 'word' }, async $ => {
     await refresh($)
@@ -214,6 +361,26 @@ export const register: Register = on => {
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const now = await read($, board)
     const name = await repo($)
+    const nothing =
+      name === ''
+        ? 'Nothing is waiting on you in this session.'
+        : `Nothing is waiting on you in this session (${name}).`
+
+    // The desktop app's small form of a minimized pane: clicks may not reach
+    // it, so it only says how many are waiting.
+    if (e.props.placement === 'widget') {
+      const waiting = now.questions.filter(
+        question => now.drafted[question.id] === undefined,
+      ).length
+
+      return (
+        <Text bold color={waiting === 0 ? 'text' : 'warning'}>
+          {waiting === 0
+            ? 'Nothing is waiting on you.'
+            : `${waiting} ${waiting === 1 ? 'question needs' : 'questions need'} your word`}
+        </Text>
+      )
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -223,7 +390,7 @@ export const register: Register = on => {
           </Text>
         )}
         {now.problem === null && now.questions.length === 0 && (
-          <Text color="text">Nothing is waiting on you in {name || 'this folder'}.</Text>
+          <Text color="text">{nothing}</Text>
         )}
         {now.questions.map((question, index) => {
           const drafted = now.drafted[question.id]

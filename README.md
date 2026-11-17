@@ -1,6 +1,6 @@
 # needs-your-word
 
-A Claude Code mod that lists the questions Claude is waiting on you for in a sidebar. You answer each one with Yes, No, or a typed reply.
+A Claude Code mod that lists the questions Claude is waiting on you for in a sidebar. You answer each one with Yes, No, or a typed reply. Every session keeps its own list.
 
 ```
 Needs your word
@@ -18,7 +18,7 @@ Other: neither? type your answer, Enter drafts it
 
 ## What it does
 
-On a long task, Claude sometimes reaches a decision that is yours to make. If it asks in the transcript, the question scrolls away while the work continues. With this mod, Claude writes the question to a small file and the mod shows that file beside the chat until you answer.
+On a long task, Claude sometimes reaches a decision that is yours to make. If it asks in the transcript, the question scrolls away while the work continues. With this mod, Claude adds the question to a list that stays beside the chat until you answer.
 
 - A row above the prompt says how many questions are waiting and has an Open button.
 - `/word` opens the list in a pane.
@@ -43,17 +43,43 @@ claude plugin install needs-your-word --marketplace In2Deep/needs-your-word
 
 In the desktop app, click + next to the prompt box, then Plugins, then Add marketplace with `In2Deep/needs-your-word`, then Add plugin.
 
-Tested on Claude Code 2.1.326.
+Installed at the user scope, the mod loads in every session you start afterwards, in the terminal and in the desktop app. Tested on Claude Code 2.1.326.
 
-## The questions file
+## How Claude adds questions
 
-Each repo has its own file, named after the folder the session runs in:
+The mod gives Claude a tool, `mcp__needs-your-word__question`. Its description tells Claude how to use it, so there is nothing to set up.
+
+| Action | What it does |
+| --- | --- |
+| `ask` | Adds a question: an `id`, the question in `ask`, and optionally `why` and `recommend`. Asking again with the same `id` replaces the question. |
+| `resolve` | Takes the question with that `id` off the list. Claude calls it after acting on your answer. |
+| `list` | Returns the open questions. |
+
+The tool runs without a permission prompt, because the only thing it changes is the session's own list. When Claude adds a question you get a short notice, and the row above the prompt updates.
+
+If you want Claude to ask less often, or only about certain things, say so in your `CLAUDE.md`. The tool says how to ask; when to ask is up to you.
+
+## One list per session
+
+A question shows only in the session that asked it, and your answer goes back to that session. You can have several sessions open in the same repo, and each one shows its own questions.
+
+The mod keeps each list in a file named after the session:
+
+```
+~/.claude/needs-your-word/<session id>.json
+```
+
+Returning to a session with `claude --resume` brings its list back. After `/clear` the conversation continues under a new session id, so its list starts empty.
+
+## A file for the whole repo
+
+You can also write questions by hand, or have Claude write them, in a file named after the repo's folder:
 
 ```
 ~/.claude/<repo>_questions.json
 ```
 
-A session in `~/code/my-app` reads `~/.claude/my-app_questions.json`. A session in one of that repo's worktrees (`my-app/.claude/worktrees/<name>`) reads the same file. A repo with no file shows nothing, so one project's questions never appear in another.
+Questions in this file show in every session in that repo. A session in `~/code/my-app` reads `~/.claude/my-app_questions.json`, and so does a session in one of its worktrees (`my-app/.claude/worktrees/<name>`). Two repos whose folders have the same name share one file.
 
 ```json
 {
@@ -68,37 +94,11 @@ A session in `~/code/my-app` reads `~/.claude/my-app_questions.json`. A session 
 }
 ```
 
-| Field | Required | What it is |
-| --- | --- | --- |
-| `id` | yes | A short name, unique within the file. |
-| `ask` | yes | The question. |
-| `why` | no | The reason or the numbers behind it, shown under the question. |
-| `recommend` | no | Claude's recommendation, shown as "Recommended: ...". |
-
-The mod reads the file again every 10 seconds and each time you run `/word`. If the file is not valid JSON, the pane says so.
-
-Two repos whose folders have the same name share one file.
-
-## Tell Claude to keep the file
-
-The mod only reads the file. Claude writes it, and it needs to be told to. Something like this in your `CLAUDE.md` works:
-
-```markdown
-## Questions for me
-
-When you need a decision from me and there is other work you can do meanwhile,
-add the question to `~/.claude/<this repo's folder name>_questions.json` as
-`{"questions": [{"id", "ask", "why", "recommend"}]}`. Phrase `ask` so that yes
-or no answers it when you can, put the numbers behind it in `why`, and leave
-`recommend` empty when you have no recommendation.
-
-A message from me that starts with `Answer to "<ask>":` is my answer to that
-question. Act on it, then remove the question from the file.
-```
+`id` and `ask` are required. The tool does not change this file: whoever wrote a question there removes it. The mod reads the file again every 10 seconds and each time you run `/word`. If the file is not valid JSON, the pane says so.
 
 ## Surfaces
 
-The tests draw the pane for the terminal, desktop and mobile surfaces. So far it has been used in the terminal; on desktop and mobile it is covered by the tests only.
+The tests draw the pane for the terminal, desktop and mobile surfaces. When the desktop app shows the pane in its small minimized form, the pane shows only how many questions are waiting. So far the mod has been used in the terminal; on desktop and mobile it is covered by the tests only.
 
 ## Develop
 
