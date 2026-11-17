@@ -1,0 +1,10 @@
+{
+  "name": "needs-your-word",
+  "version": "0.3.0",
+  "description": "A sidebar of the questions Claude is waiting on you for. Answer each with Yes, No, or a typed reply; the answer goes into your prompt box and you send it. Each repo keeps its own list in ~/.claude/<repo>_questions.json. /word opens it.",
+  "types": "./types/index.d.ts",
+  "license": "MIT-0",
+  "author": {
+    "name": "Brandon Hatch"
+  }
+}

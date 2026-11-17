@@ -1,0 +1,13 @@
+{
+  "name": "needs-your-word",
+  "owner": {
+    "name": "In2Deep"
+  },
+  "plugins": [
+    {
+      "name": "needs-your-word",
+      "source": "./"
+    }
+  ],
+  "description": "needs-your-word: the questions Claude is waiting on you for, in a sidebar."
+}
